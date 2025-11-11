@@ -1,4 +1,7 @@
-# IDE Arena by AfterQuery
+# IDE Arena
+                                                                 
+IDE Arena is a comprehensive framework for evaluating AI IDE agents on real-world software engineering tasks across diverse technology stacks. We define IDE agents as AI models operating in a chat-based IDE environment with access to the same tools available in agent-enabled IDEs like Cursor. While adoption of agent-enabled IDEs is rapidly growing, there is no existing benchmark to rigorously test how well models perform as IDE agents in practice. 
+
 
 ## Quick Start
 
