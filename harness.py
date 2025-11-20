@@ -10,22 +10,6 @@ from litellm import completion
 # Drop unsupported params for model compatibility
 litellm.drop_params = True
 
-# Estimate token count for context management
-def estimate_tokens(text: str) -> int:
-    """Rough estimate of token count (conservative estimate: 4 chars per token)"""
-    return len(text) // 4
-
-def estimate_message_tokens(messages: list) -> int:
-    """Estimate total tokens in message list"""
-    total = 0
-    for msg in messages:
-        content = msg.get("content", "")
-        if isinstance(content, str):
-            total += estimate_tokens(content)
-        elif isinstance(content, list):
-            # Handle tool results that might be lists
-            total += estimate_tokens(str(content))
-    return total
 
 
 class EnhancedTools:
@@ -36,7 +20,7 @@ class EnhancedTools:
             "type": "function",
             "function": {
                 "name": "codebase_search",
-                "description": "Find snippets of code from the codebase most relevant to the search query. This is a semantic search tool, so the query should ask for something semantically matching what is needed.",
+                "description": "Search for code snippets using text-based keyword matching. This tool performs lexical search (exact word matches) using grep/ripgrep, NOT semantic search. Best for finding specific function names, variable names, or exact text patterns.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -46,7 +30,7 @@ class EnhancedTools:
                         },
                         "query": {
                             "type": "string",
-                            "description": "The search query to find relevant code. You should reuse the user's exact query/most recent message with their wording unless there is a clear reason not to.",
+                            "description": "Keywords to search for in the codebase. Will be split into words and searched as literal text matches. Use specific terms that would appear verbatim in the code.",
                         },
                         "target_directories": {
                             "type": "array",
@@ -62,7 +46,7 @@ class EnhancedTools:
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read the contents of a file. the output of this tool call will be the 1-indexed file contents from start_line_one_indexed to end_line_one_indexed_inclusive, together with a summary of the lines outside start_line_one_indexed and end_line_one_indexed_inclusive.Note: you are NOT allowed to read files in the /tasks directory or the ./run_tests.sh file.",
+                "description": "Read the contents of a file. Returns the file contents for the specified line range. Note: Reading files in the /tasks directory or ./run_tests.sh file is restricted.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -100,7 +84,7 @@ class EnhancedTools:
             "type": "function",
             "function": {
                 "name": "run_terminal_cmd",
-                "description": "PROPOSE a command to run on behalf of the user. If you have this tool, note that you DO have the ability to run commands directly on the USER's system.",
+                "description": "Execute a terminal command in the container environment. Commands run in a sandboxed Docker container, not on the user's actual system.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -125,7 +109,7 @@ class EnhancedTools:
             "type": "function",
             "function": {
                 "name": "list_dir",
-                "description": "List the contents of a directory. The quick tool to use for discovery, before using more targeted tools like semantic search or file reading.",
+                "description": "List the contents of a directory. The quick tool to use for discovery, before using more targeted tools like grep_search or file reading.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -503,7 +487,7 @@ class EnhancedTools:
     def codebase_search(
         self, query: str, explanation: str = "", target_directories: list = None
     ) -> dict:
-        """Enhanced codebase search with semantic and text-based search"""
+        """Text-based codebase search using grep/ripgrep for keyword matching"""
         try:
             results = []
             search_dirs = target_directories if target_directories else ["."]
@@ -1136,8 +1120,8 @@ class EnhancedTools:
                     print(f"HARNESS: Content verification failed!")
                     print(f"HARNESS: Expected length: {len(expected_normalized)}")
                     print(f"HARNESS: Actual length: {len(actual_normalized)}")
-                    print(f"HARNESS: Expected preview: {expected_normalized[:200]}...")
-                    print(f"HARNESS: Actual preview: {actual_normalized[:200]}...")
+                    print(f"HARNESS: Expected: {expected_normalized}")
+                    print(f"HARNESS: Actual: {actual_normalized}")
                     return {
                         "success": False,
                         "error": "Write verification failed (content mismatch after write)",
@@ -1263,12 +1247,8 @@ class EnhancedTools:
                         "success": write_result["success"],
                         "message": f"Successfully replaced text in {file_path}",
                         "file_path": file_path,
-                        "old_string": old_string[:100] + "..."
-                        if len(old_string) > 100
-                        else old_string,
-                        "new_string": new_string[:100] + "..."
-                        if len(new_string) > 100
-                        else new_string,
+                        "old_string": old_string,
+                        "new_string": new_string,
                     }
                 else:
                     return {
@@ -1294,12 +1274,8 @@ class EnhancedTools:
                         "success": True,
                         "message": f"Successfully replaced text in {file_path}",
                         "file_path": file_path,
-                        "old_string": old_string[:100] + "..."
-                        if len(old_string) > 100
-                        else old_string,
-                        "new_string": new_string[:100] + "..."
-                        if len(new_string) > 100
-                        else new_string,
+                        "old_string": old_string,
+                        "new_string": new_string,
                     }
                 else:
                     return {
@@ -1399,136 +1375,21 @@ class EnhancedTools:
             }
 
     def web_search(self, search_term: str, explanation: str = "") -> dict:
-        """Search the web using DuckDuckGo instant answers API"""
-        try:
-            import urllib.request
-            import urllib.parse
-            import json
-
-            # Use DuckDuckGo instant answers API (no API key required)
-            encoded_term = urllib.parse.quote_plus(search_term)
-            url = f"https://api.duckduckgo.com/?q={encoded_term}&format=json&no_html=1&skip_disambig=1"
-
-            try:
-                with urllib.request.urlopen(url, timeout=10) as response:
-                    data = json.loads(response.read().decode())
-
-                    results = []
-
-                    # Add abstract if available
-                    if data.get("Abstract"):
-                        results.append({
-                            "title": data.get("AbstractSource", "Summary"),
-                            "snippet": data["Abstract"],
-                            "url": data.get("AbstractURL", ""),
-                            "type": "summary"
-                        })
-
-                    # Add instant answer if available
-                    if data.get("Answer"):
-                        results.append({
-                            "title": "Instant Answer",
-                            "snippet": data["Answer"],
-                            "url": "",
-                            "type": "answer"
-                        })
-
-                    # Add related topics
-                    for topic in data.get("RelatedTopics", [])[:3]:
-                        if isinstance(topic, dict) and topic.get("Text"):
-                            results.append({
-                                "title": topic.get("FirstURL", "").split("/")[-1] or "Related",
-                                "snippet": topic["Text"],
-                                "url": topic.get("FirstURL", ""),
-                                "type": "related"
-                            })
-
-                    return {
-                        "success": True,
-                        "search_term": search_term,
-                        "results": results,
-                        "explanation": explanation,
-                        "note": "Results from DuckDuckGo instant answers API"
-                    }
-
-            except Exception as e:
-                # Fallback: return a simulated web search result
-                return {
-                    "success": True,
-                    "search_term": search_term,
-                    "results": [{
-                        "title": f"Search results for: {search_term}",
-                        "snippet": f"Web search functionality simulated. In a real implementation, this would query search engines for '{search_term}' and return relevant web results.",
-                        "url": f"https://duckduckgo.com/?q={encoded_term}",
-                        "type": "fallback"
-                    }],
-                    "explanation": explanation,
-                    "note": f"Fallback result due to network error: {str(e)}"
-                }
-
-        except ImportError:
-            return {
-                "success": False,
-                "error": "Required modules not available for web search",
-                "search_term": search_term,
-                "explanation": explanation
-            }
+        """NOT IMPLEMENTED"""
+        return {
+            "success": False,
+            "error": "NotImplemented: Web search functionality is not available in this environment",
+            "search_term": search_term,
+            "explanation": explanation
+        }
 
     def create_diagram(self, content: str) -> dict:
-        """Create and validate a Mermaid diagram"""
-        try:
-            # Basic validation of Mermaid syntax
-            valid_diagram_types = [
-                "graph", "flowchart", "sequenceDiagram", "classDiagram",
-                "stateDiagram", "erDiagram", "journey", "gitgraph",
-                "pie", "quadrantChart", "timeline", "mindmap"
-            ]
-
-            content_lower = content.lower().strip()
-            is_valid = any(content_lower.startswith(diagram_type.lower()) for diagram_type in valid_diagram_types)
-
-            if not is_valid:
-                # Try to detect if it's a simple graph syntax
-                if any(symbol in content for symbol in ["-->", "---", "->", "--"]):
-                    # Likely a graph, prepend with graph directive
-                    content = f"graph TD\n{content}"
-                    is_valid = True
-
-            # Create a diagram file for visualization
-            diagram_filename = "generated_diagram.mmd"
-            if self.container:
-                # Save to container
-                result = run_command_in_container(
-                    container=self.container,
-                    command=["sh", "-c", f'echo "{content}" > {self.base_path / diagram_filename}']
-                )
-                file_created = result["success"]
-            else:
-                # Save locally
-                try:
-                    with open(self.base_path / diagram_filename, 'w', encoding='utf-8') as f:
-                        f.write(content)
-                    file_created = True
-                except Exception:
-                    file_created = False
-
-            return {
-                "success": True,
-                "message": "Mermaid diagram created and validated",
-                "content": content,
-                "is_valid_syntax": is_valid,
-                "file_created": file_created,
-                "filename": diagram_filename,
-                "note": f"Mermaid diagram {'validated and ' if is_valid else 'created (syntax may need review) and '}saved to {diagram_filename}",
-                "preview_url": f"https://mermaid.live/edit#{content.replace(' ', '%20').replace(chr(10), '%0A')}"
-            }
-
-        except Exception as e:
-            return {
-                "success": False,
-                "error": f"Failed to create diagram: {str(e)}",
-                "content": content
-            }
+        """NOT IMPLEMENTED"""
+        return {
+            "success": False,
+            "error": "NotImplemented: Diagram creation functionality is not available in this environment",
+            "content": content
+        }
 
     def edit_notebook(
         self,
@@ -1986,126 +1847,14 @@ class EnhancedTools:
             }
 
     def ui_test(self, action: str, selector: str = "", text: str = "", url: str = "", timeout: int = 10, explanation: str = "") -> dict:
-        """Test frontend UI functionality using browser automation"""
-        try:
-            # Try using selenium if available
-            try:
-                from selenium import webdriver
-                from selenium.webdriver.common.by import By
-                from selenium.webdriver.support.ui import WebDriverWait
-                from selenium.webdriver.support import expected_conditions as EC
-                from selenium.webdriver.chrome.options import Options
-
-                # Setup headless Chrome
-                chrome_options = Options()
-                chrome_options.add_argument("--headless")
-                chrome_options.add_argument("--no-sandbox")
-                chrome_options.add_argument("--disable-dev-shm-usage")
-
-                driver = webdriver.Chrome(options=chrome_options)
-                driver.set_page_load_timeout(timeout)
-
-                try:
-                    if action == "navigate":
-                        target_url = url or self.mern_config['frontend_url']
-                        driver.get(target_url)
-                        return {
-                            "success": True,
-                            "action": action,
-                            "url": target_url,
-                            "page_title": driver.title,
-                            "explanation": explanation
-                        }
-
-                    elif action == "screenshot":
-                        screenshot_path = "/tmp/ui_screenshot.png"
-                        driver.save_screenshot(screenshot_path)
-                        return {
-                            "success": True,
-                            "action": action,
-                            "screenshot_path": screenshot_path,
-                            "page_title": driver.title,
-                            "explanation": explanation
-                        }
-
-                    elif action == "click":
-                        element = WebDriverWait(driver, timeout).until(
-                            EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
-                        )
-                        element.click()
-                        return {
-                            "success": True,
-                            "action": action,
-                            "selector": selector,
-                            "explanation": explanation
-                        }
-
-                    elif action == "type":
-                        element = WebDriverWait(driver, timeout).until(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, selector))
-                        )
-                        element.clear()
-                        element.send_keys(text)
-                        return {
-                            "success": True,
-                            "action": action,
-                            "selector": selector,
-                            "text": text,
-                            "explanation": explanation
-                        }
-
-                    elif action == "get_text":
-                        element = WebDriverWait(driver, timeout).until(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, selector))
-                        )
-                        element_text = element.text
-                        return {
-                            "success": True,
-                            "action": action,
-                            "selector": selector,
-                            "text": element_text,
-                            "explanation": explanation
-                        }
-
-                    elif action == "wait_for_element":
-                        element = WebDriverWait(driver, timeout).until(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, selector))
-                        )
-                        return {
-                            "success": True,
-                            "action": action,
-                            "selector": selector,
-                            "message": "Element found",
-                            "explanation": explanation
-                        }
-
-                    else:
-                        return {
-                            "success": False,
-                            "error": f"Unknown UI action: {action}",
-                            "explanation": explanation
-                        }
-
-                finally:
-                    driver.quit()
-
-            except ImportError:
-                # Fallback: simulate UI test
-                return {
-                    "success": True,
-                    "action": action,
-                    "message": "UI test simulated (selenium not available)",
-                    "note": "Install selenium and chromedriver for real UI testing",
-                    "explanation": explanation
-                }
-
-        except Exception as e:
-            return {
-                "success": False,
-                "error": f"UI test failed: {str(e)}",
-                "action": action,
-                "explanation": explanation
-            }
+        """NOT IMPLEMENTED"""
+        return {
+            "success": False,
+            "error": "NotImplemented: UI testing functionality is not available in this environment",
+            "action": action,
+            "selector": selector,
+            "explanation": explanation
+        }
 
 
 class LiteLLMAgentHarness:
@@ -2327,22 +2076,27 @@ Always explain your reasoning and approach clearly.
             try:
                 print(f"HARNESS: Iteration {iterations}, making LLM call with model {self.model_name}")
                 print(f"HARNESS: Messages length: {len(messages)}")
+                print(f"HARNESS: Current conversation:")
+                for i, msg in enumerate(messages[-3:], max(0, len(messages)-3)):
+                    role = msg.get('role', 'unknown')
+                    content = msg.get('content', '')
+                    if isinstance(content, str):
+                        print(f"HARNESS: Message {i}: [{role}] {content}")
+                    else:
+                        print(f"HARNESS: Message {i}: [{role}] [Non-string content]")
                 print(f"HARNESS: Tools available: {len(self.tools)}")
 
-                # Context window management for Claude (200k token limit with buffer)
-                estimated_tokens = estimate_message_tokens(messages)
-                print(f"HARNESS: Estimated tokens: {estimated_tokens}")
-
-                if estimated_tokens > 180000:  # Leave 20k buffer for response
+                # Context window management - simple message count limit
+                if len(messages) > 25:  # Keep conversations manageable
                     print(f"HARNESS: Truncating conversation to fit context window")
-                    # Keep system message and last 10 messages only
+                    # Keep system message and last 20 messages only
                     system_msg = messages[0]
-                    recent_messages = messages[-10:]
+                    recent_messages = messages[-20:]
                     messages = [system_msg] + recent_messages
                     print(f"HARNESS: Truncated to {len(messages)} messages")
 
                 # Make the LLM call
-                # Add safety settings for Gemini to prevent blocking
+                # Safety settings for Gemini to prevent blocking
                 extra_params = {}
                 if "gemini" in self.model_name.lower():
                     extra_params["safety_settings"] = [
@@ -2368,8 +2122,18 @@ Always explain your reasoning and approach clearly.
 
                 messages.append(message.dict())
 
-                print(f"HARNESS: Got response. Content length: {len(message.content or '')}")
+                print(f"HARNESS: Got response:")
+                print(f"HARNESS: Response content: {message.content or '[No content]'}")
                 print(f"HARNESS: Tool calls: {len(message.tool_calls) if message.tool_calls else 0}")
+
+                if message.tool_calls:
+                    for i, tool_call in enumerate(message.tool_calls, 1):
+                        print(f"HARNESS: Tool call {i}: {tool_call.function.name}")
+                        try:
+                            args = json.loads(tool_call.function.arguments)
+                            print(f"HARNESS: Tool call {i} arguments: {json.dumps(args, indent=2)}")
+                        except json.JSONDecodeError:
+                            print(f"HARNESS: Tool call {i} arguments (raw): {tool_call.function.arguments}")
 
                 # Prepare tool call details for conversation history
                 tool_call_details = []
@@ -2410,7 +2174,7 @@ Always explain your reasoning and approach clearly.
                         if tool_call.function.name == "edit_file":
                             args = json.loads(tool_call.function.arguments)
                             print(f"HARNESS: Edit target: {args.get('target_file', 'N/A')}")
-                            print(f"HARNESS: Edit instructions: {args.get('instructions', 'N/A')[:100]}...")
+                            print(f"HARNESS: Edit instructions: {args.get('instructions', 'N/A')}")
                             if 'line_edits' in args:
                                 print(f"HARNESS: Line edits count: {len(args['line_edits'])}")
                                 for j, edit in enumerate(args['line_edits'][:3]):  # Show first 3 edits
@@ -2421,9 +2185,13 @@ Always explain your reasoning and approach clearly.
                         result = self._execute_tool_call(tool_call)
                         print(f"HARNESS: Tool {i} result success: {result.get('success', 'N/A')}")
 
-                        # Enhanced error reporting
+                        if result.get('success') and result.get('content'):
+                            content = str(result['content'])
+                            print(f"HARNESS: Tool {i} content: {content}")
+
+                        # Error reporting
                         if 'error' in result:
-                            print(f"HARNESS: Tool {i} error: {result['error'][:200]}...")
+                            print(f"HARNESS: Tool {i} error: {result['error']}")
                             if result.get('syntax_error'):
                                 print(f"HARNESS: SYNTAX ERROR at line {result.get('syntax_line', 'N/A')}: {result.get('syntax_msg', 'N/A')}")
                                 if 'attempted_changes' in result:
@@ -2516,14 +2284,28 @@ Create a simple Python script called 'hello.py' that:
 
     if result["success"]:
         print(f"Final response: {result['final_response']}")
-        print(f"\nConversation history ({len(result['conversation_history'])} steps):")
+        print(f"\nFull Conversation History ({len(result['conversation_history'])} steps):")
         for i, step in enumerate(result["conversation_history"], 1):
-            print(f"  Step {i}: {step['message'][:100]}...")
-            if step["tool_calls"]:
-                for tool_call in step["tool_calls"]:
-                    print(
-                        f"    -> {tool_call['function_name']}: {tool_call['result']['success']}"
-                    )
+            print(f"\n=== STEP {i} ===")
+            print(f"Message: {step.get('message', 'No message')}")
+
+            if step.get("tool_calls_requested"):
+                print(f"Tool calls requested ({len(step['tool_calls_requested'])}):")
+                for j, tool_call in enumerate(step["tool_calls_requested"], 1):
+                    print(f"  {j}. {tool_call['function_name']}")
+                    print(f"     Arguments: {json.dumps(tool_call.get('arguments', {}), indent=6)}")
+
+            if step.get("tool_results"):
+                print(f"Tool results ({len(step['tool_results'])}):")
+                for j, result in enumerate(step["tool_results"], 1):
+                    print(f"  {j}. {result.get('function_name', 'unknown')}")
+                    print(f"     Success: {result.get('result', {}).get('success', 'unknown')}")
+                    if result.get('result', {}).get('content'):
+                        # Show full content without truncation
+                        content = str(result['result']['content'])
+                        print(f"     Content: {content}")
+                    if result.get('result', {}).get('error'):
+                        print(f"     Error: {result['result']['error']}")
     else:
         print(f"Error: {result['error']}")
 

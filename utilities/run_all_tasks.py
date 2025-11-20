@@ -18,13 +18,14 @@ def get_task_names(dataset_path: Path) -> list:
     return sorted(tasks)
 
 
-def run_task(task_name: str, dataset: str, agent: str, model: str) -> bool:
+def run_task(task_name: str, dataset: str, agent: str, model: str, max_iterations: int = 35) -> bool:
     cmd = [
         "uv", "run", "main.py", "bench",
         "--dataset", dataset,
         "--agent", agent,
         "--model", model,
-        "--task-id", task_name
+        "--task-id", task_name,
+        "--max-iterations", str(max_iterations)
     ]
 
     print(f"Running task: {task_name} with agent: {agent}, model: {model}")
@@ -43,17 +44,21 @@ def run_task(task_name: str, dataset: str, agent: str, model: str) -> bool:
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python run_all_tasks.py <dataset> [model] [--start-from task_name]")
+        print("Usage: python run_all_tasks.py <dataset> [model] [--start-from task_name] [--max-iterations N]")
         sys.exit(1)
 
     dataset = sys.argv[1]
     model = "gpt-5"
     start_from = None
+    max_iterations = 35
 
     i = 2
     while i < len(sys.argv):
         if sys.argv[i] == "--start-from" and i + 1 < len(sys.argv):
             start_from = sys.argv[i + 1]
+            i += 2
+        elif sys.argv[i] == "--max-iterations" and i + 1 < len(sys.argv):
+            max_iterations = int(sys.argv[i + 1])
             i += 2
         else:
             model = sys.argv[i]
@@ -70,6 +75,7 @@ def main():
         agent = "harness"
 
     print(f"Running tasks in dataset '{dataset}' with agent: {agent}, model: {model}")
+    print(f"Max iterations per task: {max_iterations}")
     if start_from:
         print(f"Starting from task: {start_from}")
 
@@ -114,7 +120,7 @@ def main():
     results = {}
     for i, task in enumerate(tasks, 1):
         print(f"\n[{i}/{len(tasks)}] Processing task: {task}")
-        success = run_task(task, dataset, agent, model)
+        success = run_task(task, dataset, agent, model, max_iterations)
         results[task] = success
         print("-" * 60)
 

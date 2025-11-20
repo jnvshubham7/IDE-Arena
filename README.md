@@ -25,6 +25,14 @@ uv run main.py bench --dataset /path_to_directory/golden --agent oracle --model 
 uv run main.py bench --dataset /path_to_directory/stubbed --agent harness --model litellm_model_name --task-id name_of_task
 ```
 
+**Controlling Agent Iterations**
+
+You can limit the maximum number of iterations an agent can take using the `--max-iterations` flag (default: 35):
+
+```bash
+uv run main.py bench --dataset /path/to/dataset --agent harness --model gpt-4 --task-id task_name --max-iterations 60
+```
+
 ## Environment Setup
 
 Set your API keys:
@@ -43,14 +51,16 @@ You can now run with any LiteLLM supported model tag via litellm_model_name, or 
 **Run all datasets:**
 
 ```bash
-uv run utilities/run_all_datasets.py <datasets_directory> [model]
+uv run utilities/run_all_datasets.py <datasets_directory> [model] [--max-iterations N]
 ```
 
 **Run all tasks in a dataset:**
 
 ```bash
-uv run utilities/run_all_tasks.py <dataset> [model] [--start-from task_name]
+uv run utilities/run_all_tasks.py <dataset> [model] [--start-from task_name] [--max-iterations N]
 ```
+
+**Parameters:**
 
 - `<dataset>`: Path to dataset directory (searches both absolute path and `datasets/<dataset>`)
 - `[model]`: Model name (defaults to "gpt-5"). Special values:
@@ -58,6 +68,7 @@ uv run utilities/run_all_tasks.py <dataset> [model] [--start-from task_name]
   - `nullagent`: Uses harness agent with nullagent model
   - Any other value: Uses harness agent with specified model
 - `[--start-from task_name]`: Resume from a specific task (for interrupted/partial runs)
+- `[--max-iterations N]`: Maximum iterations per task (default: 35)
 
 ## Web Interface
 
@@ -107,3 +118,16 @@ dataset/
     │   └── docker-compose.yaml
     └── ...
 ```
+
+## Available Agent Tools
+
+The harness agent has access to the following IDE-like tools when solving tasks:
+
+1. **codebase_search** - Search for code snippets using text-based keyword matching (lexical search using grep/ripgrep)
+2. **read_file** - Read file contents with optional line range specification
+3. **run_terminal_cmd** - Execute terminal commands in the Docker container environment
+4. **list_dir** - List directory contents for exploration
+5. **grep_search** - Perform regex-based searches across files using ripgrep
+6. **edit_file** - Edit files using structured line-based operations (insert, replace, delete)
+7. **file_search** - Search for files using fuzzy path matching
+8. **delete_file** - Delete files from the workspace

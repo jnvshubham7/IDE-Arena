@@ -214,6 +214,7 @@ def deploy_agent_in_container(
     model_name: str,
     task_data: dict,
     verbose: bool = False,
+    max_iterations: int = 35,
 ) -> dict:
     """Deploy agent in container"""
     if agent_name == "oracle":  # not a real agent
@@ -309,8 +310,8 @@ START: List likely directories, grep for relevant symbols, confirm the target fi
             model_name=model_name, container=container, base_path="/app", mern_config=mern_config
         )
 
-        print(f"AGENT_UTILS: Executing task with max_iterations=35...")
-        result = harness.execute_task(prompt, max_iterations=35)
+        print(f"AGENT_UTILS: Executing task with max_iterations={max_iterations}...")
+        result = harness.execute_task(prompt, max_iterations=max_iterations)
         print(f"AGENT_UTILS: Task execution completed. Success: {result.get('success')}")
         print(f"AGENT_UTILS: Result keys: {list(result.keys())}")
         if 'error' in result:

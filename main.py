@@ -234,6 +234,7 @@ def bench(
         None, "--task-id", help="Specific task ID to run (runs all if not specified)"
     ),
     verbose: bool = typer.Option(False, "--verbose", help="Verbose output"),
+    max_iterations: int = typer.Option(35, "--max-iterations", help="Maximum number of agent iterations (default: 35)"),
 ):
     """Benchmark a model against a ide-arena dataset"""
 
@@ -244,7 +245,19 @@ def bench(
 
     def normalize_model_name(model: str) -> str:
         """Normalize model name for filenames"""
-        return model.replace('/', '_').replace('openai/', '').replace('anthropic/', '').replace('gemini/', '')
+
+        providers = ['openai/', 'anthropic/', 'gemini/', 'google/',
+                     'xai/', 'meta/', 'mistral/', 'cohere/',
+                     'huggingface/', 'replicate/', 'together/',
+                     'aws/', 'azure/', 'vertex/', 'ai21/', 'aleph/',
+                     'databricks/', 'fireworks/', 'groq/', 'perplexity/']
+
+        normalized = model
+        for provider in providers:
+            normalized = normalized.replace(provider, '')
+
+        normalized = normalized.replace('/', '_')
+        return normalized
 
     def normalize_task_name(task: str, dataset_name: str) -> str:
         """Extract task name from task_id or dataset"""
@@ -659,6 +672,7 @@ temp/"""
                             model_name=model_name,
                             task_data=task_data,
                             verbose=verbose,
+                            max_iterations=max_iterations,
                         )
 
                         vctx.log(f"Agent deployment result: {agent_result}", "debug")
