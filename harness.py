@@ -499,7 +499,12 @@ class EnhancedTools:
                 if self.container:
                     # First try ripgrep for content search
                     rg_cmd = ["rg", "-i", "--type", "py", "--type", "js", "--type", "ts",
-                             "-n", "-C", "2", query, str(self.base_path / search_dir)]
+                             "-n", "-C", "2",
+                             # Explicit exclusions for safety
+                             "-g", "!node_modules/", "-g", "!.venv/", "-g", "!venv/",
+                             "-g", "!__pycache__/", "-g", "!.git/", "-g", "!dist/",
+                             "-g", "!build/", "-g", "!target/", "-g", "!vendor/",
+                             query, str(self.base_path / search_dir)]
 
                     result = run_command_in_container(self.container, rg_cmd)
                     if result["success"] and result["output"]:
@@ -523,6 +528,16 @@ class EnhancedTools:
                     if not results:
                         cmd = [
                             "find", str(self.base_path / search_dir), "-type", "f",
+                            # Exclude common dependency/build directories
+                            "-not", "-path", "*/node_modules/*",
+                            "-not", "-path", "*/.venv/*",
+                            "-not", "-path", "*/venv/*",
+                            "-not", "-path", "*/__pycache__/*",
+                            "-not", "-path", "*/.git/*",
+                            "-not", "-path", "*/dist/*",
+                            "-not", "-path", "*/build/*",
+                            "-not", "-path", "*/target/*",
+                            "-not", "-path", "*/vendor/*",
                             "(", "-name", "*.py", "-o", "-name", "*.js", "-o", "-name", "*.ts",
                             "-o", "-name", "*.jsx", "-o", "-name", "*.tsx", ")",
                             "-exec", "grep", "-l", "-i", query, "{}", ";"
@@ -539,10 +554,25 @@ class EnhancedTools:
                 else:
                     # Local search with better file content analysis
                     search_path = self.base_path / search_dir
+
+                    # Define exclusion patterns
+                    exclude_dirs = {
+                        'node_modules', '.venv', 'venv', '__pycache__', '.git',
+                        'dist', 'build', 'target', 'vendor', '.next', '.nuxt',
+                        '.cache', 'tmp', 'temp', '.gradle', '.m2', 'obj', 'bin'
+                    }
+
+                    def should_exclude_path(path: Path) -> bool:
+                        """Check if path contains excluded directories"""
+                        return any(exc_dir in path.parts for exc_dir in exclude_dirs)
+
                     for ext in ["*.py", "*.js", "*.ts", "*.jsx", "*.tsx", "*.java", "*.cpp", "*.c"]:
                         for file in search_path.glob(f"**/{ext}"):
                             if len(results) >= 10:
                                 break
+                            # Skip excluded directories
+                            if should_exclude_path(file):
+                                continue
                             try:
                                 with open(file, 'r', encoding='utf-8') as f:
                                     content = f.read()
@@ -780,14 +810,28 @@ class EnhancedTools:
             # Build search command
             if self.container:
 
-                # Check if ripgrep is available inside the container, fallback to grep. Commenting out for now.
+                # Check if ripgrep is available inside the container, fallback to grep.
                 # rg_check = run_command_in_container(self.container, ["which", "rg"])
                 # cmd = ["rg"] if rg_check["success"] else ["grep", "-r"]
+                cmd = ["rg"]
 
                 if not case_sensitive and cmd[0] == "rg":
                     cmd.append("-i")
                 elif not case_sensitive and cmd[0] == "grep":
                     cmd.append("-i")
+
+                default_excludes = [
+                    "node_modules", ".venv", "venv", "__pycache__", ".git",
+                    "dist", "build", "target", "vendor", ".next", ".nuxt",
+                    ".cache", "tmp", "temp", ".gradle", ".m2", "obj", "bin"
+                ]
+
+                if cmd[0] == "rg":
+                    for exc in default_excludes:
+                        cmd.extend(["-g", f"!{exc}/"])
+                else:
+                    for exc in default_excludes:
+                        cmd.extend(["--exclude-dir", exc])
 
                 if include_pattern:
                     if cmd[0] == "rg":
@@ -818,6 +862,19 @@ class EnhancedTools:
 
                 if not case_sensitive:
                     cmd.append("-i")
+
+                default_excludes = [
+                    "node_modules", ".venv", "venv", "__pycache__", ".git",
+                    "dist", "build", "target", "vendor", ".next", ".nuxt",
+                    ".cache", "tmp", "temp", ".gradle", ".m2", "obj", "bin"
+                ]
+
+                if cmd[0] == "rg":
+                    for exc in default_excludes:
+                        cmd.extend(["-g", f"!{exc}/"])
+                else:
+                    for exc in default_excludes:
+                        cmd.extend(["--exclude-dir", exc])
 
                 if include_pattern and cmd[0] == "rg":
                     cmd.extend(["-g", include_pattern])
@@ -1584,6 +1641,61 @@ class EnhancedTools:
                         str(self.base_path / directory),
                         "-type",
                         "f",
+                        # JavaScript/Node.js
+                        "-not", "-path", "*/node_modules/*",
+                        "-not", "-path", "*/.next/*",
+                        "-not", "-path", "*/.nuxt/*",
+                        "-not", "-path", "*/dist/*",
+                        "-not", "-path", "*/build/*",
+
+                        # Python
+                        "-not", "-path", "*/__pycache__/*",
+                        "-not", "-path", "*/.venv/*",
+                        "-not", "-path", "*/venv/*",
+                        "-not", "-path", "*/.env/*",
+                        "-not", "-path", "*/site-packages/*",
+                        "-not", "-path", "*/.tox/*",
+                        "-not", "-path", "*/.pytest_cache/*",
+                        "-not", "-path", "*/.mypy_cache/*",
+                        "-not", "-path", "*.egg-info/*",
+
+                        # Ruby
+                        "-not", "-path", "*/vendor/bundle/*",
+                        "-not", "-path", "*/.bundle/*",
+
+                        # Java/Kotlin/Gradle/Maven
+                        "-not", "-path", "*/target/*",
+                        "-not", "-path", "*/.gradle/*",
+                        "-not", "-path", "*/.m2/*",
+
+                        # .NET/C#
+                        "-not", "-path", "*/bin/*",
+                        "-not", "-path", "*/obj/*",
+                        "-not", "-path", "*/packages/*",
+
+                        # Go
+                        "-not", "-path", "*/vendor/*",
+
+                        # Rust
+                        "-not", "-path", "*/target/debug/*",
+                        "-not", "-path", "*/target/release/*",
+
+                        # PHP
+                        "-not", "-path", "*/vendor/*",
+
+                        # Misc
+                        "-not", "-path", "*/.git/*",
+                        "-not", "-path", "*/.svn/*",
+                        "-not", "-path", "*/.hg/*",
+                        "-not", "-path", "*/.vscode/*",
+                        "-not", "-path", "*/.idea/*",
+                        "-not", "-path", "*/.vs/*",
+                        "-not", "-path", "*/.cache/*",
+                        "-not", "-path", "*/tmp/*",
+                        "-not", "-path", "*/temp/*",
+                        "-not", "-path", "*/.tmp/*",
+                        "-not", "-path", "*/.terraform/*",
+                        "-not", "-path", "*/.docker/*",
                         "-name",
                         "*",
                     ],
@@ -1615,10 +1727,27 @@ class EnhancedTools:
                 # Local file system
                 full_path = self.base_path / directory
                 if full_path.exists() and full_path.is_dir():
+                    exclude_patterns = [
+                        'node_modules', '.next', '.nuxt', 'dist', 'build',
+                        '__pycache__', '.venv', 'venv', '.env', 'site-packages',
+                        '.tox', '.pytest_cache', '.mypy_cache', '.egg-info',
+                        'vendor/bundle', '.bundle', 'target', '.gradle', '.m2',
+                        'bin', 'obj', 'packages', 'vendor',
+                        '.git', '.svn', '.hg',
+                        '.vscode', '.idea', '.vs',
+                        '.cache', 'tmp', 'temp', '.tmp',
+                        '.terraform', '.docker'
+                    ]
+
+                    def should_exclude(path: Path) -> bool:
+                        """Check if path contains any excluded directory"""
+                        path_parts = path.parts
+                        return any(pattern in path_parts for pattern in exclude_patterns)
+
                     files = [
                         str(p.relative_to(self.base_path))
                         for p in full_path.rglob("*")
-                        if p.is_file()
+                        if p.is_file() and not should_exclude(p)
                     ]
                     return {"success": True, "files": files, "directory": directory}
                 else:
