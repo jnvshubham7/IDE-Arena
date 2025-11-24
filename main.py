@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import sys
+import traceback
 from datetime import datetime
 from io import StringIO
 from pathlib import Path
@@ -18,6 +19,17 @@ from typing import Optional
 
 import docker
 import typer
+
+
+def sanitize_traceback(tb_string: str) -> str:
+    pattern = r'File "([^"]+)",'
+
+    def replace_path(match):
+        full_path = match.group(1)
+        filename = os.path.basename(full_path)
+        return f'File "{filename}",'
+
+    return re.sub(pattern, replace_path, tb_string)
 from agent_utils import deploy_agent_in_container
 from constants import Model
 from docker_utils import run_command_in_container
@@ -99,10 +111,12 @@ def create_log_entry(
     log_file_path: str,
     tests_passed: int = 0,
     total_tests: int = 0,
+    pass_at_k: int = 1,
+    num_passed_attempts: Optional[int] = None,
 ) -> dict:
     """Create a log entry for the CSV summary"""
     duration_seconds = (end_time - start_time).total_seconds()
-    return {
+    entry = {
         "timestamp": start_time.strftime("%Y-%m-%d %H:%M:%S"),
         "dataset": dataset,
         "agent": agent,
@@ -116,6 +130,13 @@ def create_log_entry(
         "test_success_rate": f"{tests_passed}/{total_tests}" if total_tests > 0 else "0/0",
         "log_file": log_file_path,
     }
+
+    # Add pass@k fields if k > 1
+    if pass_at_k > 1:
+        entry["pass_at_k"] = pass_at_k
+        entry["num_passed_attempts"] = num_passed_attempts if num_passed_attempts is not None else (1 if success else 0)
+
+    return entry
 
 
 def write_csv_log(log_entry: dict):
@@ -235,10 +256,19 @@ def bench(
     ),
     verbose: bool = typer.Option(False, "--verbose", help="Verbose output"),
     max_iterations: int = typer.Option(35, "--max-iterations", help="Maximum number of agent iterations (default: 35)"),
+    pass_at_k: int = typer.Option(1, "--pass-at", help="Number of independent runs for pass@k evaluation (default: 1 for pass@1)"),
 ):
-    """Benchmark a model against a ide-arena dataset"""
+    """Benchmark a model against a ide-arena dataset with pass@k support"""
 
     start_time = datetime.now()
+
+    if pass_at_k < 1:
+        print(f"Error: --pass-at must be at least 1 (got {pass_at_k})")
+        raise typer.Exit(1)
+
+    if pass_at_k > 1 and agent == "oracle":
+        print(f"Warning: pass@k with oracle agent is deterministic")
+        print(f"Continuing with pass@{pass_at_k}...")
 
     logs_dir = Path("logs")
     logs_dir.mkdir(exist_ok=True)
@@ -263,26 +293,43 @@ def bench(
         """Extract task name from task_id or dataset"""
         if task:
             return task
-        dataset_parts = Path(dataset_name).name.split('-')
-        if len(dataset_parts) > 1:
-            return '-'.join(dataset_parts[1:])
-        return dataset_parts[0]
+        # If no specific task, return 'all-tasks'
+        return "all-tasks"
 
     normalized_model = normalize_model_name(model_name)
     normalized_task = normalize_task_name(task_id, dataset)
 
-    log_filename = f"{normalized_model}_{normalized_task}.log"
+    # Extract dataset name from path
+    dataset_name = Path(dataset).name
+
+    # Build log filename with dataset name included
+    # Format: {model}_{dataset}_{task}_pass@{k}.log
+    if pass_at_k > 1:
+        if task_id:
+            log_filename = f"{normalized_model}_{dataset_name}_{normalized_task}_pass@{pass_at_k}.log"
+        else:
+            log_filename = f"{normalized_model}_{dataset_name}_all-tasks_pass@{pass_at_k}.log"
+    else:
+        if task_id:
+            log_filename = f"{normalized_model}_{dataset_name}_{normalized_task}.log"
+        else:
+            log_filename = f"{normalized_model}_{dataset_name}_all-tasks.log"
     log_file_path = logs_dir / log_filename
 
     overall_success = True
     total_tests_passed = 0
     total_tests_run = 0
 
+    # Pass@k tracking: stores results for all tasks
+    all_tasks_pass_at_k_results = []
+
     with OutputCapture(str(log_file_path)):
         print(
             f"Starting benchmark run at {start_time.strftime('%Y-%m-%d %H:%M:%S')}"
         )
         print(f"Dataset: {dataset}, Agent: {agent}, Model: {model_name}")
+        if pass_at_k > 1:
+            print(f"Pass@{pass_at_k} Evaluation: Running {pass_at_k} independent attempts per task")
         if task_id:
             print(f"Task: {task_id}")
         else:
@@ -663,54 +710,165 @@ temp/"""
                             vctx.log("Task description is not valid", "error")
                             raise typer.Exit(1)
 
-                        vctx.log("Deploying agent...")
+                        # Pass@k evaluation: Run k independent attempts for this task
+                        task_pass_at_k_results = []
 
-                        try:
-                            agent_result = deploy_agent_in_container(
+                        for attempt_num in range(1, pass_at_k + 1):
+                            if pass_at_k > 1:
+                                print(f"\n{'='*60}")
+                                print(f"PASS@K: Attempt {attempt_num}/{pass_at_k} for task {current_task_id}")
+                                print(f"{'='*60}\n")
+
+                            vctx.log(f"Deploying agent (attempt {attempt_num}/{pass_at_k})...")
+
+                            try:
+                                agent_result = deploy_agent_in_container(
+                                    container=container,
+                                    agent_name=agent,
+                                    task_id=current_task_id,
+                                    model_name=model_name,
+                                    task_data=task_data,
+                                    verbose=verbose,
+                                    max_iterations=max_iterations,
+                                )
+                            except Exception as e:
+                                print(f"AGENT DEPLOYMENT FAILED WITH EXCEPTION: {type(e).__name__}: {str(e)}")
+                                tb_string = traceback.format_exc()
+                                sanitized_tb = sanitize_traceback(tb_string)
+                                print(f"Traceback: {sanitized_tb}")
+
+                                agent_result = {
+                                    "success": False,
+                                    "error": f"Agent crashed: {str(e)}",
+                                    "conversation_history": [],
+                                }
+
+                            vctx.log(f"Agent deployment result: {agent_result}", "debug")
+
+
+                            if pass_at_k == 1:
+                                pretty_print_conversation(agent_result, verbose)
+
+                            vctx.log(f"Running grading (attempt {attempt_num}/{pass_at_k})...")
+                            grading_result = run_grading_in_container(
                                 container=container,
-                                agent_name=agent,
                                 task_id=current_task_id,
-                                model_name=model_name,
-                                task_data=task_data,
-                                verbose=verbose,
-                                max_iterations=max_iterations,
+                                test_type=task_data["parser_name"],
+                                dataset_dir=str(dataset_dir),
+                                agent_execution_data=agent_result,
                             )
-                        except Exception as e:
-                            print(f"AGENT DEPLOYMENT FAILED WITH EXCEPTION: {type(e).__name__}: {str(e)}")
-                            import traceback
-                            print(f"Traceback: {traceback.format_exc()}")
-                            # Create a minimal agent_result so grading can still run
-                            agent_result = {
-                                "success": False,
-                                "error": f"Agent crashed: {str(e)}",
-                                "conversation_history": [],
-                            }
+                            vctx.log(
+                                f"{current_task_id} grading result (attempt {attempt_num}): {grading_result}",
+                                "debug",
+                            )
 
-                        vctx.log(f"Agent deployment result: {agent_result}", "debug")
+                            # Store this attempt's result
+                            attempt_success = grading_result.get("success", False)
+                            attempt_tests_passed = grading_result.get("tests_passed", 0)
+                            attempt_total_tests = grading_result.get("total_tests", 0)
+                            attempt_pass_rate = grading_result.get("pass_rate", 0)
 
-                        pretty_print_conversation(agent_result, verbose)
+                            task_pass_at_k_results.append({
+                                "attempt": attempt_num,
+                                "success": attempt_success,
+                                "tests_passed": attempt_tests_passed,
+                                "total_tests": attempt_total_tests,
+                                "pass_rate": attempt_pass_rate,
+                                "agent_result": agent_result,
+                                "grading_result": grading_result,
+                            })
 
-                        vctx.log("Running grading...")
-                        grading_result = run_grading_in_container(
-                            container=container,
-                            task_id=current_task_id,
-                            test_type=task_data["parser_name"],
-                            dataset_dir=str(dataset_dir),
-                            agent_execution_data=agent_result,
-                        )
-                        vctx.log(
-                            f"{current_task_id} grading result: {grading_result}",
-                            "debug",
-                        )
+                            # Log attempt result
+                            if pass_at_k > 1:
+                                status = "PASS" if attempt_success else "FAIL"
+                                print(f"\nPASS@K Attempt {attempt_num}/{pass_at_k}: {status}")
+                                print(f"       Tests: {attempt_tests_passed}/{attempt_total_tests} ({attempt_pass_rate:.1%})")
 
-                        success = grading_result.get("success", False)
+                            if attempt_success and pass_at_k > 1 and attempt_num < pass_at_k:
+                                print(f"\nEarly exit: Attempt {attempt_num} passed all tests")
+                                try:
+                                    container.stop()
+                                    container.remove()
+                                except Exception as e:
+                                    print(f"Warning: Failed to clean up container: {e}")
+                                break
+
+                            if attempt_num < pass_at_k:
+                                try:
+                                    container.stop()
+                                    container.remove()
+                                except Exception as e:
+                                    print(f"Warning: Failed to clean up container after attempt {attempt_num}: {e}")
+
+                                # Create fresh container for next attempt
+                                print(f"\nPASS@K: Creating fresh container for attempt {attempt_num + 1}...")
+                                container = client.containers.run(
+                                    image.id,
+                                    detach=True,
+                                    entrypoint=["/bin/sh", "-c"],
+                                    command=["tail -f /dev/null"],
+                                    environment=env_vars,
+                                )
+
+                                try:
+                                    container.reload()
+                                    if container.status != "running":
+                                        container.start()
+                                        container.reload()
+                                except Exception as e:
+                                    pass
+
+                                # Quick git setup for new container (abbreviated version)
+                                run_command_in_container(container, ["git", "config", "--global", "user.email", "test@example.com"], stream=False)
+                                run_command_in_container(container, ["git", "config", "--global", "user.name", "Test User"], stream=False)
+                                run_command_in_container(container, ["git", "config", "--global", "core.autocrlf", "false"], stream=False)
+                                run_command_in_container(container, ["git", "config", "--global", "init.defaultBranch", "main"], stream=False)
+                                run_command_in_container(container, ["git", "-C", "/app", "init"], stream=False)
+
+                                # Create .gitignore
+                                gitignore_content = "node_modules/\nvenv/\nenv/\n__pycache__/\n*.pyc\nbuild/\ndist/\ntarget/\n*.log\npackage-lock.json\nyarn.lock\n.vscode/\n.idea/"
+                                run_command_in_container(container, ["sh", "-c", f"cd /app && echo '{gitignore_content}' > .gitignore"], stream=False)
+
+                                # Add and commit
+                                run_command_in_container(container, ["git", "-C", "/app", "add", "-A"], stream=False)
+                                run_command_in_container(container, ["git", "-C", "/app", "commit", "-m", "Initial state", "--allow-empty"], stream=False)
+
+                                # Delete task_diff.txt for gladiator
+                                if agent != "oracle":
+                                    run_command_in_container(container, ["sh", "-c", "find tasks -type f -name 'task_diff.txt' -delete"], stream=False)
+
+                        any_attempt_passed_all_tests = any(r["success"] for r in task_pass_at_k_results)
+                        num_passed_attempts = sum(1 for r in task_pass_at_k_results if r["success"])
+
+                        best_attempt = max(task_pass_at_k_results, key=lambda r: (r["tests_passed"], r["success"]))
+
+                        if pass_at_k > 1:
+                            print(f"\n{'='*60}")
+                            print(f"BEST ATTEMPT: #{best_attempt['attempt']} - Showing full conversation:")
+                            print(f"{'='*60}\n")
+                            pretty_print_conversation(best_attempt["agent_result"], verbose)
+
+                        grading_result = best_attempt["grading_result"]
+                        agent_result = best_attempt["agent_result"]
+
+                        success = any_attempt_passed_all_tests
                         if not success:
                             overall_success = False
 
-                        task_tests_passed = grading_result.get("tests_passed", 0)
-                        task_total_tests = grading_result.get("total_tests", 0)
+                        task_tests_passed = best_attempt["tests_passed"]
+                        task_total_tests = best_attempt["total_tests"]
                         total_tests_passed += task_tests_passed
                         total_tests_run += task_total_tests
+
+                        # Store pass@k results for this task
+                        all_tasks_pass_at_k_results.append({
+                            "task_id": current_task_id,
+                            "k": pass_at_k,
+                            "attempts": task_pass_at_k_results,
+                            "any_passed": any_attempt_passed_all_tests,
+                            "num_passed": num_passed_attempts,
+                            "best_attempt": best_attempt,
+                        })
 
                         result = "Success" if success else "Failure"
                         failed_code_message = (
@@ -722,11 +880,20 @@ temp/"""
                         pass_rate = grading_result.get("pass_rate", 0)
                         meets_reqs = grading_result.get("meets_minimum_requirements", False)
 
-                        print(
-                            f"TASK {current_task_id}:\t{'Success' if success else 'Failure'}.\t "
-                            f"Passed {grading_result['tests_passed']}/{grading_result['total_tests']} tests "
-                            f"({pass_rate:.1%}){failed_code_message}"
-                        )
+                        # Print summary based on pass@k
+                        if pass_at_k > 1:
+                            print(f"\n{'='*60}")
+                            print(f"TASK {current_task_id} PASS@{pass_at_k} SUMMARY:")
+                            print(f"  Overall: {'SUCCESS' if success else 'FAILURE'} ({'At least 1' if success else 'None'} of {pass_at_k} attempts passed all tests)")
+                            print(f"  Successful Attempts: {num_passed_attempts}/{pass_at_k}")
+                            print(f"  Best Attempt: #{best_attempt['attempt']} with {best_attempt['tests_passed']}/{best_attempt['total_tests']} tests ({best_attempt['pass_rate']:.1%})")
+                            print(f"{'='*60}")
+                        else:
+                            print(
+                                f"TASK {current_task_id}:\t{'Success' if success else 'Failure'}.\t "
+                                f"Passed {grading_result['tests_passed']}/{grading_result['total_tests']} tests "
+                                f"({pass_rate:.1%}){failed_code_message}"
+                            )
 
                         if "lab_training_data" in grading_result and grading_result["lab_training_data"]:
                             lab_data = grading_result["lab_training_data"]
@@ -750,11 +917,13 @@ temp/"""
                         for error in grading_result.get("validation_errors", []):
                             print(f"\t {error}")
 
-                        for test_name, test_status in grading_result[
-                            "test_details"
-                        ].items():
-                            status_icon = "pass" if test_status.value == "PASSED" else "fail"
-                            print(f"\t{status_icon} {test_name}: {test_status.value}")
+                        # Only show detailed test results for pass@1 (too verbose for pass@k)
+                        if pass_at_k == 1:
+                            for test_name, test_status in grading_result[
+                                "test_details"
+                            ].items():
+                                status_icon = "pass" if test_status.value == "PASSED" else "fail"
+                                print(f"\t{status_icon} {test_name}: {test_status.value}")
 
                         container.stop()
                         container.remove()
@@ -781,6 +950,20 @@ temp/"""
             )
             print(f"Overall result: {'Success' if overall_success else 'Failure'}")
             print(f"Total tests: {total_tests_passed}/{total_tests_run} passed")
+
+            # Add pass@k statistics if k > 1
+            if pass_at_k > 1 and all_tasks_pass_at_k_results:
+                total_tasks = len(all_tasks_pass_at_k_results)
+                tasks_with_any_pass = sum(1 for t in all_tasks_pass_at_k_results if t["any_passed"])
+                print(f"\nPass@{pass_at_k} Statistics:")
+                print(f"  Tasks with ≥1 successful attempt: {tasks_with_any_pass}/{total_tasks} ({tasks_with_any_pass/total_tasks*100:.1f}%)")
+
+                # Calculate average success rate across all attempts
+                total_attempts = sum(len(t["attempts"]) for t in all_tasks_pass_at_k_results)
+                successful_attempts = sum(t["num_passed"] for t in all_tasks_pass_at_k_results)
+                if total_attempts > 0:
+                    print(f"  Overall attempt success rate: {successful_attempts}/{total_attempts} ({successful_attempts/total_attempts*100:.1f}%)")
+
             print(f"Full log saved to: {log_file_path}")
 
             log_entry = create_log_entry(
@@ -794,6 +977,8 @@ temp/"""
                 log_file_path=str(log_file_path.name),
                 tests_passed=total_tests_passed,
                 total_tests=total_tests_run,
+                pass_at_k=pass_at_k,
+                num_passed_attempts=sum(t["num_passed"] for t in all_tasks_pass_at_k_results) if all_tasks_pass_at_k_results else None,
             )
 
             write_csv_log(log_entry)

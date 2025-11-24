@@ -222,7 +222,13 @@ def deploy_agent_in_container(
             container=container,
             command=["git", "apply", f"tasks/{task_id}/task_diff.txt"],
         )
-        return {"success": result["success"], "output": result["output"]}
+        return {
+            "success": result["success"],
+            "made_code_changes": result["success"],
+            "conversation_history": [],
+            "final_response": f"Oracle applied diff: {result.get('output', '')}",
+            "output": result["output"],
+        }
     elif agent_name == "gladiator":
         print(f"AGENT_UTILS: Creating gladiator agent with model {model_name}")
 

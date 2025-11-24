@@ -33,6 +33,26 @@ You can limit the maximum number of iterations an agent can take using the `--ma
 uv run main.py bench --dataset /path/to/dataset --agent gladiator --model gpt-4 --task-id task_name --max-iterations 35
 ```
 
+**Pass@k Evaluation**
+
+Run multiple independent attempts per task to measure success probability (default: pass@1):
+
+```bash
+# Pass@1 (default - single attempt)
+uv run main.py bench --dataset datasets/Nike --agent gladiator --model gpt-4o --task-id task-01
+
+# Pass@5 (5 independent attempts)
+uv run main.py bench --dataset datasets/Nike --agent gladiator --model gpt-4o --task-id task-01 --pass-at 5
+```
+
+**How Pass@k Works:**
+
+- Each attempt runs independently with a fresh container
+- **Success**: If ANY of the k attempts passes all tests
+- **Failure**: If none pass all tests, the best attempt (highest test pass count) is kept
+- Accounts for non-determinism in LLM outputs
+- Standard metric used in code generation research (HumanEval, Codex)
+
 ## Environment Setup
 
 Set your API keys:
@@ -51,13 +71,13 @@ You can now run with any LiteLLM supported model tag via litellm_model_name, or 
 **Run all datasets:**
 
 ```bash
-uv run utilities/run_all_datasets.py <datasets_directory> [model] [--max-iterations N]
+uv run utilities/run_all_datasets.py <datasets_directory> [model] [--max-iterations N] [--pass-at K]
 ```
 
 **Run all tasks in a dataset:**
 
 ```bash
-uv run utilities/run_all_tasks.py <dataset> [model] [--start-from task_name] [--max-iterations N]
+uv run utilities/run_all_tasks.py <dataset> [model] [--start-from task_name] [--max-iterations N] [--pass-at K]
 ```
 
 **Parameters:**
@@ -69,6 +89,7 @@ uv run utilities/run_all_tasks.py <dataset> [model] [--start-from task_name] [--
   - Any other value: Uses gladiator agent with specified model
 - `[--start-from task_name]`: Resume from a specific task (for interrupted/partial runs)
 - `[--max-iterations N]`: Maximum iterations per task (default: 35)
+- `[--pass-at K]`: Number of independent attempts per task for pass@k evaluation (default: 1)
 
 ## Web Interface
 

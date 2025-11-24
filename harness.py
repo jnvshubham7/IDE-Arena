@@ -1,6 +1,9 @@
 import json
+import os
+import re
 import shutil
 import subprocess
+import traceback
 from pathlib import Path
 
 import litellm
@@ -9,6 +12,44 @@ from litellm import completion
 
 # Drop unsupported params for model compatibility
 litellm.drop_params = True
+
+
+def sanitize_traceback(tb_string: str) -> str:
+    pattern = r'File "([^"]+)",'
+
+    def replace_path(match):
+        full_path = match.group(1)
+        # Keep only the filename
+        filename = os.path.basename(full_path)
+        return f'File "{filename}",'
+
+    sanitized = re.sub(pattern, replace_path, tb_string)
+
+    return sanitized
+
+
+def is_test_file_or_directory(path: str) -> bool:
+    path_lower = path.lower()
+    path_parts = Path(path).parts
+
+    if 'tests' in path_parts or '__tests__' in path_parts:
+        return True
+
+    filename = Path(path).name.lower()
+    test_patterns = [
+        'test_',           # Python: test_foo.py
+        '_test.',          # Python: foo_test.py
+        '.test.',          # JS/TS: foo.test.js
+        '.spec.',          # JS/TS: foo.spec.js
+        '_spec.',          # Ruby: foo_spec.rb
+        'test.',           # Go: foo_test.go (when just 'test.go')
+    ]
+
+    for pattern in test_patterns:
+        if pattern in filename:
+            return True
+
+    return False
 
 
 
@@ -84,7 +125,7 @@ class EnhancedTools:
             "type": "function",
             "function": {
                 "name": "run_terminal_cmd",
-                "description": "Execute a terminal command in the container environment. Commands run in a sandboxed Docker container, not on the user's actual system.",
+                "description": "Execute a terminal command in the container environment. Commands run in a sandboxed Docker container, not on the user's actual system. IMPORTANT: Web servers, dev servers, and long-running processes (uvicorn, npm run dev, flask run, etc.) MUST use is_background=true to avoid timeouts. Foreground commands have a 120-second timeout.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -98,7 +139,7 @@ class EnhancedTools:
                         },
                         "is_background": {
                             "type": "boolean",
-                            "description": "Whether the command should be run in the background",
+                            "description": "Whether the command should be run in the background. MUST be true for web servers, dev servers, or any long-running process (e.g., uvicorn, npm run dev, flask run, node server.js, etc.). Set to false only for quick commands that complete immediately.",
                         },
                     },
                     "required": ["command", "is_background"],
@@ -208,7 +249,52 @@ class EnhancedTools:
                 },
             },
         },
-        # Intentionally omit search_replace from advertised tools to nudge structural edits via edit_file
+        {
+            "type": "function",
+            "function": {
+                "name": "write_file",
+                "description": "Write content to a new file or completely overwrite an existing file. Use this for creating new files or replacing entire file contents.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "The path of the file to write, relative to the workspace root.",
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "The complete content to write to the file.",
+                        },
+                    },
+                    "required": ["file_path", "content"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "search_replace",
+                "description": "Search for exact text in a file and replace it with new text. Performs a simple string replacement - the old_string must match exactly.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "The path of the file to modify, relative to the workspace root.",
+                        },
+                        "old_string": {
+                            "type": "string",
+                            "description": "The exact text to find and replace (must match exactly, including whitespace).",
+                        },
+                        "new_string": {
+                            "type": "string",
+                            "description": "The new text to replace the old text with.",
+                        },
+                    },
+                    "required": ["file_path", "old_string", "new_string"],
+                },
+            },
+        },
         {
             "type": "function",
             "function": {
@@ -677,7 +763,9 @@ class EnhancedTools:
         try:
             if self.container:
                 cmd_list = ["sh", "-c", command]
-                result = run_command_in_container(self.container, cmd_list)
+                result = run_command_in_container(
+                    self.container, cmd_list, detach=is_background
+                )
                 return {
                     "success": result["success"],
                     "output": result.get("output", ""),
@@ -922,6 +1010,14 @@ class EnhancedTools:
             line_edits: List of line-based edits
         """
         try:
+            # Prevent editing test files
+            if is_test_file_or_directory(target_file):
+                return {
+                    "success": False,
+                    "error": f"Cannot edit test file '{target_file}'. Test files and directories are read-only to maintain evaluation integrity. Please modify source code files instead.",
+                    "target_file": target_file,
+                }
+
             if edit_type != "line_edits":
                 return {
                     "success": False,
@@ -1268,6 +1364,14 @@ class EnhancedTools:
     def search_replace(self, file_path: str, old_string: str, new_string: str) -> dict:
         """Search and replace text in a file"""
         try:
+            # Prevent modifying test files
+            if is_test_file_or_directory(file_path):
+                return {
+                    "success": False,
+                    "error": f"Cannot modify test file '{file_path}'. Test files and directories are read-only to maintain evaluation integrity.",
+                    "file_path": file_path,
+                }
+
             if self.container:
                 # Read file first
                 read_result = run_command_in_container(
@@ -1393,6 +1497,14 @@ class EnhancedTools:
     def delete_file(self, target_file: str, explanation: str = "") -> dict:
         """Delete a file"""
         try:
+            # Prevent deleting test files
+            if is_test_file_or_directory(target_file):
+                return {
+                    "success": False,
+                    "error": f"Cannot delete test file '{target_file}'. Test files and directories are read-only to maintain evaluation integrity.",
+                    "target_file": target_file,
+                }
+
             if self.container:
                 result = run_command_in_container(
                     self.container, ["rm", str(self.base_path / target_file)]
@@ -1594,6 +1706,14 @@ class EnhancedTools:
     def write_file(self, file_path: str, content: str) -> dict:
         """Write content to a file - kept for backward compatibility"""
         try:
+            # Prevent writing to test files
+            if is_test_file_or_directory(file_path):
+                return {
+                    "success": False,
+                    "error": f"Cannot write to test file '{file_path}'. Test files and directories are read-only to maintain evaluation integrity.",
+                    "file_path": file_path,
+                }
+
             if self.container:
                 # Use echo to write content to file in container
                 escaped_content = content.replace('"', '\\"').replace("$", "\\$")
@@ -2368,8 +2488,9 @@ Always explain your reasoning and approach clearly.
 
             except Exception as e:
                 print(f"HARNESS: EXCEPTION CAUGHT IN ITERATION {iterations}: {type(e).__name__}: {str(e)}")
-                import traceback
-                print(f"HARNESS: Traceback:\n{traceback.format_exc()}")
+                tb_string = traceback.format_exc()
+                sanitized_tb = sanitize_traceback(tb_string)
+                print(f"HARNESS: Traceback:\n{sanitized_tb}")
                 return {
                     "success": False,
                     "error": f"Error during execution at iteration {iterations}: {type(e).__name__}: {str(e)}",
