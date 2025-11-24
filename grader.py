@@ -500,7 +500,7 @@ def run_grading_in_container(container, task_id: str, test_type: str, dataset_di
         print(f"GRADER: Error running diff comparison: {e}")
 
     # Parse individual test results from pytest output
-    individual_test_results = parse_test_output(result.get('output', ''), 'pytest')
+    individual_test_results = parse_test_output(result.get('output', ''), test_type)
 
     # Count individual test results
     num_passed = sum(1 for status in individual_test_results.values() if status == TestStatus.PASSED)
