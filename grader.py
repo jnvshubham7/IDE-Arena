@@ -811,59 +811,79 @@ def parse_log_pytest(log: str) -> dict[str, TestStatus]:
     """
     test_status_map = {}
 
+    status_first_regex = re.compile(r"^(PASSED|FAILED|SKIPPED|ERROR|XFAIL|XPASS)\s+([^\s]+)")
+    status_last_regex = re.compile(r"^([^\s]+)\s+(PASSED|FAILED|SKIPPED|ERROR|XFAIL|XPASS)")
+
     for line in log.split("\n"):
         line = line.strip()
 
-        # Match lines like "PASSED tests/base/test_health.py::test_health"
-        # or "FAILED task/some/path.py::test_name - AssertionError"
+        match = status_first_regex.match(line)
+        if match:
+            status_str = match.group(1)
+            test_name = match.group(2)
+            _add_test_result(test_status_map, test_name, status_str)
+            continue
+
+        match = status_last_regex.match(line)
+        if match:
+            test_name = match.group(1)
+            status_str = match.group(2)
+            _add_test_result(test_status_map, test_name, status_str)
+            continue
+
         if line.startswith("PASSED "):
-            # Extract test name after "PASSED "
             test_name = line[7:].split()[0] if len(line) > 7 else ""
             if test_name:
-                test_status_map[test_name] = TestStatus.PASSED
+                _add_test_result(test_status_map, test_name, "PASSED")
 
         elif line.startswith("FAILED "):
-            # Extract test name after "FAILED ", handle potential error message after " - "
             rest = line[7:]
             test_name = rest.split()[0] if rest else ""
-            if " - " in test_name:
-                test_name = test_name.split(" - ")[0]
             if test_name:
-                test_status_map[test_name] = TestStatus.FAILED
+                _add_test_result(test_status_map, test_name, "FAILED")
 
         elif line.startswith("ERROR "):
-            # Handle ERROR status
             test_name = line[6:].split()[0] if len(line) > 6 else ""
             if test_name:
-                test_status_map[test_name] = TestStatus.FAILED
+                 _add_test_result(test_status_map, test_name, "ERROR")
 
-        elif line.startswith("SKIPPED "):
-            # Handle SKIPPED status
-            test_name = line[8:].split()[0] if len(line) > 8 else ""
-            if test_name:
-                test_status_map[test_name] = TestStatus.FAILED  # Count skipped as failed
-
-    # Fallback: if no tests found with above method, try the old format
-    if not test_status_map:
-        tests_are_here = False
+    if not test_status_map or len(test_status_map) == 0:
+        summary_section = False
         for line in log.split("\n"):
-            if not tests_are_here and line.startswith("collecting"):
-                tests_are_here = True
-            if tests_are_here and line.startswith("==="):
-                tests_are_here = False
-            if tests_are_here:
-                if any([line.__contains__(x.value) for x in TestStatus]):
-                    line_split = line.split()
-                    if len(line_split) >= 2:
-                        test_case = line_split[0].strip()
-                        test_status = TestStatus(line_split[1].strip())
-                        # Additional parsing for FAILED status
-                        if line.startswith(TestStatus.FAILED.value):
-                            line = line.replace(" - ", " ")
-                        test_status_map[test_case] = test_status
+            if "short test summary info" in line:
+                summary_section = True
+                continue
+
+            if summary_section:
+                if line.startswith("====="):
+                    summary_section = False
+                    break
+
+                match = status_first_regex.match(line.strip())
+                if match:
+                    status_str = match.group(1)
+                    test_name = match.group(2)
+                    _add_test_result(test_status_map, test_name, status_str)
 
     return test_status_map
 
+
+def _add_test_result(test_status_map, test_name, status_str):
+    if test_name.startswith("=") or test_name.startswith("_"):
+        return
+
+    if " - " in test_name:
+        test_name = test_name.split(" - ")[0]
+
+    status = TestStatus.FAILED
+    if status_str in ["PASSED", "XPASS"]:
+        status = TestStatus.PASSED
+    elif status_str == "SKIPPED":
+        status = TestStatus.FAILED
+    elif status_str == "XFAIL":
+        status = TestStatus.PASSED
+
+    test_status_map[test_name] = status
 
 def parse_log_maven(log: str) -> dict[str, str]:
     """
