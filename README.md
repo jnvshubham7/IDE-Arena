@@ -70,10 +70,10 @@ You can now run with any LiteLLM supported model tag via litellm_model_name, or 
 
 **Run all datasets in parallel (Cloud/VM Optimized):**
 
-The `run_parallel.py` utility allows you to execute benchmarks for all datasets simultaneously, which is essential for large-scale evaluations. It supports streaming logs to Azure Blob Storage if configured.
+The `utilities/run_parallel.py` utility allows you to execute benchmarks for all datasets simultaneously, which is essential for large-scale evaluations. It supports streaming logs to Azure Blob Storage if configured.
 
 ```bash
-uv run run_parallel.py --agent gladiator --model gpt-5 [--pass-at K] [--max-iterations N] [--max-concurrent M]
+uv run utilities/run_parallel.py --agent gladiator --model gpt-5 [--pass-at K] [--max-iterations N] [--max-concurrent M]
 ```
 
 - **Parallel Execution**: Runs multiple dataset benchmarks concurrently using a thread pool.
