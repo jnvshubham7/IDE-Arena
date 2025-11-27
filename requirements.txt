@@ -1,2 +1,7 @@
 litellm
 google-generativeai
+python-dotenv
+typer
+rich
+docker
+pydantic
