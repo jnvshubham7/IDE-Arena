@@ -581,58 +581,62 @@ def bench(
                             print(f"CONTAINER: Git status check failed: {git_status_check.get('error', 'Unknown error')}")
 
                         print("CONTAINER: Creating .gitignore...")
-                        gitignore_content = """node_modules/
-venv/
-env/
-.env
-__pycache__/
-*.pyc
-*.pyo
-.pytest_cache/
-
-build/
-dist/
-*.egg-info/
-target/
-
-*.log
-*.tmp
-.DS_Store
-.coverage
-.cache/
-
-package-lock.json
-package.json
-yarn.lock
-composer.lock
-Gemfile.lock
-Pipfile.lock
-poetry.lock
-.package-lock.json
-.npm/
-.yarn/
-
-.vscode/
-.idea/
-*.swp
-*.swo
-
-.DS_Store
-Thumbs.db
-
-*.pid
-*.seed
-
-coverage/
-.nyc_output/
-.coverage
-
-tmp/
-temp/"""
-
+                        # Use printf with escaped newlines to avoid heredoc issues with docker exec
+                        # The repr() call in docker_utils.py breaks heredoc syntax
+                        gitignore_lines = [
+                            "node_modules/",
+                            "venv/",
+                            "env/",
+                            ".env",
+                            "__pycache__/",
+                            "*.pyc",
+                            "*.pyo",
+                            ".pytest_cache/",
+                            "",
+                            "build/",
+                            "dist/",
+                            "*.egg-info/",
+                            "target/",
+                            "",
+                            "*.log",
+                            "*.tmp",
+                            ".DS_Store",
+                            ".coverage",
+                            ".cache/",
+                            "",
+                            "package-lock.json",
+                            "package.json",
+                            "yarn.lock",
+                            "composer.lock",
+                            "Gemfile.lock",
+                            "Pipfile.lock",
+                            "poetry.lock",
+                            ".package-lock.json",
+                            ".npm/",
+                            ".yarn/",
+                            "",
+                            ".vscode/",
+                            ".idea/",
+                            "*.swp",
+                            "*.swo",
+                            "",
+                            ".DS_Store",
+                            "Thumbs.db",
+                            "",
+                            "*.pid",
+                            "*.seed",
+                            "",
+                            "coverage/",
+                            ".nyc_output/",
+                            ".coverage",
+                            "",
+                            "tmp/",
+                            "temp/",
+                        ]
+                        gitignore_content = "\\n".join(gitignore_lines)
                         gitignore_result = run_command_in_container(
                             container=container,
-                            command=["sh", "-c", f"cd /app && cat > .gitignore << 'GITIGNORE_EOF'\n{gitignore_content}\nGITIGNORE_EOF"],
+                            command=["sh", "-c", f"cd /app && printf '%b' '{gitignore_content}' > .gitignore"],
                             stream=False,
                         )
                         if gitignore_result.get("exit_code") != 0:
@@ -872,9 +876,9 @@ temp/"""
                                 run_command_in_container(container, ["git", "config", "--global", "init.defaultBranch", "main"], stream=False)
                                 run_command_in_container(container, ["git", "-C", "/app", "init"], stream=False)
 
-                                # Create .gitignore
-                                gitignore_content = "node_modules/\nvenv/\nenv/\n__pycache__/\n*.pyc\nbuild/\ndist/\ntarget/\n*.log\npackage-lock.json\nyarn.lock\n.vscode/\n.idea/"
-                                run_command_in_container(container, ["sh", "-c", f"cd /app && echo '{gitignore_content}' > .gitignore"], stream=False)
+                                # Create .gitignore using printf to handle newlines properly through docker exec
+                                gitignore_content = "node_modules/\\nvenv/\\nenv/\\n__pycache__/\\n*.pyc\\nbuild/\\ndist/\\ntarget/\\n*.log\\npackage-lock.json\\nyarn.lock\\n.vscode/\\n.idea/"
+                                run_command_in_container(container, ["sh", "-c", f"cd /app && printf '%b' '{gitignore_content}' > .gitignore"], stream=False)
 
                                 # Add and commit
                                 run_command_in_container(container, ["git", "-C", "/app", "add", "-A"], stream=False)
