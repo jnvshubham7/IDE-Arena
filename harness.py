@@ -2387,19 +2387,84 @@ Always explain your reasoning and approach clearly.
                         print(f"HARNESS: Message {i}: [{role}] [Non-string content]")
                 print(f"HARNESS: Tools available: {len(self.tools)}")
 
-                # Context window management - simple message count limit
-                if len(messages) > 25:  # Keep conversations manageable
+                # Context window management: token-based truncation with hybrid fallback
+                if len(messages) > 25:
                     print(f"HARNESS: Truncating conversation to fit context window")
-                    # Keep system message and last 20 messages only
                     system_msg = messages[0]
-                    start_idx = len(messages) - 20
 
-                    while start_idx > 1 and messages[start_idx].get("role") == "tool":
-                        start_idx -= 1
+                    try:
+                        model_max_tokens = litellm.get_max_tokens(self.model_name)
+                        if model_max_tokens and model_max_tokens > 0:
+                            target_tokens = int(model_max_tokens * 0.8)
+                            current_tokens = litellm.token_counter(model=self.model_name, messages=messages)
 
-                    recent_messages = messages[start_idx:]
-                    messages = [system_msg] + recent_messages
-                    print(f"HARNESS: Truncated to {len(messages)} messages")
+                            if current_tokens and current_tokens > target_tokens:
+                                # print(f"HARNESS: Token-based truncation: {current_tokens}/{model_max_tokens} tokens (target: {target_tokens})")
+                                # truncated_messages = [system_msg]
+
+                                turns = []
+                                current_turn = []
+                                for msg in messages[1:]:
+                                    current_turn.append(msg)
+                                    if msg.get("role") == "assistant" and current_turn:
+                                        pass
+                                    elif msg.get("role") == "tool":
+                                        pass
+
+                                    if msg.get("role") == "assistant":
+                                        if current_turn:
+                                            turns.append(current_turn)
+                                            current_turn = []
+
+                                if current_turn:
+                                    turns.append(current_turn)
+
+                                selected_messages = []
+                                for turn in reversed(turns):
+                                    test_messages = [system_msg] + turn + selected_messages
+                                    turn_tokens = litellm.token_counter(model=self.model_name, messages=test_messages)
+                                    if turn_tokens and turn_tokens < target_tokens:
+                                        selected_messages = turn + selected_messages
+                                    else:
+                                        break
+
+                                if selected_messages:
+                                    messages = [system_msg] + selected_messages
+                                    final_tokens = litellm.token_counter(model=self.model_name, messages=messages)
+                                    print(f"HARNESS: Token-truncated to {len(messages)} messages ({final_tokens}/{target_tokens} tokens)")
+                                else:
+                                    raise ValueError("Token truncation resulted in empty messages")
+                            else:
+                                print(f"HARNESS: Token count OK: {current_tokens}/{target_tokens} tokens")
+                        else:
+                            raise ValueError("Could not get model max tokens")
+
+                    except Exception as e:
+                        # print(f"HARNESS: Token-based truncation failed ({e}), using hybrid fallback")
+
+                        turns_to_keep = 10
+                        max_messages_to_keep = 30
+
+                        start_idx = len(messages)
+                        turns_counted = 0
+
+                        while start_idx > 1 and turns_counted < turns_to_keep:
+                            start_idx -= 1
+                            if messages[start_idx].get("role") == "assistant":
+                                turns_counted += 1
+
+                        recent_messages = messages[start_idx:]
+
+                        if len(recent_messages) > max_messages_to_keep:
+                            # print(f"HARNESS: Turn-based selection too large ({len(recent_messages)} msgs), applying safety cap")
+                            start_idx = len(messages) - max_messages_to_keep
+
+                            while start_idx > 1 and messages[start_idx].get("role") == "tool":
+                                start_idx -= 1
+                            recent_messages = messages[start_idx:]
+
+                        messages = [system_msg] + recent_messages
+                        print(f"HARNESS: Hybrid-truncated to {len(messages)} messages ({turns_counted} turns)")
 
                 # Make the LLM call
                 # Safety settings for Gemini to prevent blocking
