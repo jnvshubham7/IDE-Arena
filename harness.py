@@ -1767,23 +1767,37 @@ class EnhancedTools:
                 }
 
             if self.container:
-                # Use echo to write content to file in container
-                escaped_content = content.replace('"', '\\"').replace("$", "\\$")
-                result = run_command_in_container(
+                import io
+                import tarfile
+
+                # Resolve the full path
+                full_path = self.base_path / file_path
+
+                # Ensure parent directory exists
+                parent_dir = str(full_path.parent)
+                run_command_in_container(
                     container=self.container,
-                    command=[
-                        "sh",
-                        "-c",
-                        f'echo "{escaped_content}" > {self.base_path / file_path}',
-                    ],
+                    command=["mkdir", "-p", parent_dir],
                 )
+
+                # Create a tar archive in memory with the file content
+                tar_stream = io.BytesIO()
+                file_data = content.encode('utf-8')
+
+                with tarfile.open(fileobj=tar_stream, mode='w') as tar:
+                    tarinfo = tarfile.TarInfo(name=full_path.name)
+                    tarinfo.size = len(file_data)
+                    tar.addfile(tarinfo, io.BytesIO(file_data))
+
+                tar_stream.seek(0)
+
+                # Use Docker API to put the file directly (no shell interpretation)
+                self.container.put_archive(parent_dir, tar_stream.getvalue())
+
                 return {
-                    "success": result["success"],
-                    "message": f"Successfully wrote to {file_path}"
-                    if result["success"]
-                    else "Failed to write file",
+                    "success": True,
+                    "message": f"Successfully wrote to {file_path}",
                     "file_path": file_path,
-                    "error": result.get("error") if not result["success"] else None,
                 }
             else:
                 # Local file system
