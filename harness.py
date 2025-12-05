@@ -113,26 +113,17 @@ def sanitize_traceback(tb_string: str) -> str:
 
 
 def is_test_file_or_directory(path: str) -> bool:
-    path_lower = path.lower()
-    path_parts = Path(path).parts
-
-    if 'tests' in path_parts or '__tests__' in path_parts:
-        return True
-
+    # Only block specific grading-related files
     filename = Path(path).name.lower()
-    test_patterns = [
-        'test_',           # Python: test_foo.py
-        '_test.',          # Python: foo_test.py
-        '.test.',          # JS/TS: foo.test.js
-        '.spec.',          # JS/TS: foo.spec.js
-        '_spec.',          # Ruby: foo_spec.rb
-        'test.',           # Go: foo_test.go (when just 'test.go')
-    ]
-
-    for pattern in test_patterns:
-        if pattern in filename:
-            return True
-
+    
+    # Block task_tests.* files (grading files)
+    if filename.startswith('task_tests.'):
+        return True
+    
+    # Block run-tests.sh and run_tests.sh
+    if filename in ['run-tests.sh', 'run_tests.sh']:
+        return True
+    
     return False
 
 
