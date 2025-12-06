@@ -17,7 +17,15 @@ from io import StringIO
 from pathlib import Path
 from typing import Optional
 
-import docker
+try:
+    import docker
+    from docker.errors import DockerException, APIError
+    _DOCKER_PY_AVAILABLE = True
+except ImportError:
+    docker = None
+    DockerException = Exception
+    APIError = Exception
+    _DOCKER_PY_AVAILABLE = False
 import typer
 
 
@@ -400,7 +408,25 @@ def bench(
                 )
                 raise typer.Exit(1)
 
-            client = docker.from_env()
+            if not _DOCKER_PY_AVAILABLE:
+                print("[red]Error: Python package 'docker' is not installed in the current environment.[/red]")
+                print("Install it with: `pip install docker` or `pip install -r requirements.txt`")
+                raise typer.Exit(1)
+
+            try:
+                client = docker.from_env()
+            except Exception as e:
+                # Provide a clearer, actionable error message when Docker is unreachable
+                print("[red]Error: Unable to connect to the Docker daemon.[/red]")
+                print(f"[red]Reason:[/red] {str(e)}")
+                print("[yellow]Suggested steps:[/yellow]")
+                print("  1. Ensure Docker Desktop is running (look for the whale icon).")
+                print("  2. Restart Docker Desktop or run as administrator: `Restart Docker`.")
+                print("  3. Run `docker version` and `docker info` to inspect server status.")
+                print("  4. On Windows, check the service: `sc query com.docker.service` and restart if needed.")
+                print("  5. If using WSL2, ensure WSL is working and Docker is configured for WSL2 integration.")
+                print("If the problem persists, check Docker Desktop logs and try reinstalling/updating Docker.")
+                raise typer.Exit(1)
 
             task_ids = (
                 [d.name for d in task_dir.iterdir() if d.is_dir()]
