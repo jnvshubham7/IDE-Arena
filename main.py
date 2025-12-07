@@ -21,6 +21,10 @@ from typing import Optional
 try:
     import docker
     from docker.errors import DockerException, APIError
+    try:
+        from docker.types import LogConfig
+    except Exception:
+        LogConfig = None
     _DOCKER_PY_AVAILABLE = True
 except ImportError:
     docker = None
@@ -510,6 +514,7 @@ def bench(
                             entrypoint=["/bin/sh", "-c"],
                             command=["tail -f /dev/null"],
                             environment=env_vars,
+                            **({"log_config": LogConfig(type="json-file", config={"max-size": "10m", "max-file": "3"})} if LogConfig else {}),
                         )
 
                         try:
@@ -635,66 +640,77 @@ def bench(
                             print(f"CONTAINER: Git status check failed: {git_status_check.get('error', 'Unknown error')}")
 
                         print("CONTAINER: Creating .gitignore...")
-                        # Use printf with escaped newlines to avoid heredoc issues with docker exec
-                        # The repr() call in docker_utils.py breaks heredoc syntax
-                        gitignore_lines = [
-                            "node_modules/",
-                            "venv/",
-                            "env/",
-                            ".env",
-                            "__pycache__/",
-                            "*.pyc",
-                            "*.pyo",
-                            ".pytest_cache/",
-                            "",
-                            "build/",
-                            "dist/",
-                            "*.egg-info/",
-                            "target/",
-                            "",
-                            "*.log",
-                            "*.tmp",
-                            ".DS_Store",
-                            ".coverage",
-                            ".cache/",
-                            "",
-                            "package-lock.json",
-                            "package.json",
-                            "yarn.lock",
-                            "composer.lock",
-                            "Gemfile.lock",
-                            "Pipfile.lock",
-                            "poetry.lock",
-                            ".package-lock.json",
-                            ".npm/",
-                            ".yarn/",
-                            "",
-                            ".vscode/",
-                            ".idea/",
-                            "*.swp",
-                            "*.swo",
-                            "",
-                            ".DS_Store",
-                            "Thumbs.db",
-                            "",
-                            "*.pid",
-                            "*.seed",
-                            "",
-                            "coverage/",
-                            ".nyc_output/",
-                            ".coverage",
-                            "",
-                            "tmp/",
-                            "temp/",
-                        ]
-                        gitignore_content = "\\n".join(gitignore_lines)
-                        gitignore_result = run_command_in_container(
+                        # Check if .gitignore exists in the container and preserve it
+                        gitignore_check = run_command_in_container(
                             container=container,
-                            command=["sh", "-c", f"cd /app && printf '%b' '{gitignore_content}' > .gitignore"],
+                            command=["test", "-f", "/app/.gitignore"],
                             stream=False,
                         )
-                        if gitignore_result.get("exit_code") != 0:
-                            print(f"CONTAINER: Failed to create .gitignore: {gitignore_result.get('error', 'Unknown error')}")
+                        
+                        if gitignore_check.get("exit_code") != 0:
+                            # No existing .gitignore, create a default one
+                            # Use printf with escaped newlines to avoid heredoc issues with docker exec
+                            # The repr() call in docker_utils.py breaks heredoc syntax
+                            gitignore_lines = [
+                                "node_modules/",
+                                "venv/",
+                                "env/",
+                                ".env",
+                                "__pycache__/",
+                                "*.pyc",
+                                "*.pyo",
+                                ".pytest_cache/",
+                                "",
+                                "build/",
+                                "dist/",
+                                "*.egg-info/",
+                                "target/",
+                                "",
+                                "*.log",
+                                "*.tmp",
+                                ".DS_Store",
+                                ".coverage",
+                                ".cache/",
+                                "",
+                                "package-lock.json",
+                                "package.json",
+                                "yarn.lock",
+                                "composer.lock",
+                                "Gemfile.lock",
+                                "Pipfile.lock",
+                                "poetry.lock",
+                                ".package-lock.json",
+                                ".npm/",
+                                ".yarn/",
+                                "",
+                                ".vscode/",
+                                ".idea/",
+                                "*.swp",
+                                "*.swo",
+                                "",
+                                ".DS_Store",
+                                "Thumbs.db",
+                                "",
+                                "*.pid",
+                                "*.seed",
+                                "",
+                                "coverage/",
+                                ".nyc_output/",
+                                ".coverage",
+                                "",
+                                "tmp/",
+                                "temp/",
+                            ]
+                            gitignore_content = "\\n".join(gitignore_lines)
+                            gitignore_result = run_command_in_container(
+                                container=container,
+                                command=["sh", "-c", f"cd /app && printf '%b' '{gitignore_content}' > .gitignore"],
+                                stream=False,
+                            )
+                            if gitignore_result.get("exit_code") != 0:
+                                print(f"CONTAINER: Failed to create .gitignore: {gitignore_result.get('error', 'Unknown error')}")
+                        else:
+                            print("CONTAINER: Using existing .gitignore from dataset")
 
                         print("CONTAINER: Checking available files...")
                         ls_result = run_command_in_container(
@@ -706,6 +722,16 @@ def bench(
                             print(f"CONTAINER: Files in /app: {ls_result.get('output', '').strip()}")
 
                         print("CONTAINER: Adding source files to git (respecting .gitignore)...")
+
+                        # First, remove any files from the index that should be ignored
+                        # Use git rm --cached with the files we want to exclude
+                        git_clean_index = run_command_in_container(
+                            container=container,
+                            command=["git", "-C", "/app", "rm", "-r", "--cached", "-f", "."],
+                            stream=False,
+                        )
+                        if git_clean_index.get("exit_code") == 0:
+                            print("CONTAINER: Cleared git index")
 
                         git_reset_result = run_command_in_container(
                             container=container,
@@ -935,6 +961,7 @@ def bench(
                                     entrypoint=["/bin/sh", "-c"],
                                     command=["tail -f /dev/null"],
                                     environment=env_vars,
+                                    **({"log_config": LogConfig(type="json-file", config={"max-size": "10m", "max-file": "3"})} if LogConfig else {}),
                                 )
 
                                 try:
