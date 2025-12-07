@@ -12,6 +12,7 @@ import os
 import re
 import sys
 import traceback
+import warnings
 from datetime import datetime
 from io import StringIO
 from pathlib import Path
@@ -47,7 +48,34 @@ from rich.console import Console
 from rich.syntax import Syntax
 from util import parse_task_description
 
+# Suppress Docker daemon logging driver warnings
 logging.basicConfig(level=logging.WARNING, format="%(message)s")
+logging.getLogger("docker").setLevel(logging.ERROR)
+logging.getLogger("urllib3").setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", message=".*configured logging driver does not support reading.*")
+
+# Redirect stderr to suppress Docker daemon messages
+class DockerWarningFilter:
+    def __init__(self, original_stderr):
+        self.original_stderr = original_stderr
+        self.buffer = ""
+    
+    def write(self, message):
+        if "configured logging driver does not support reading" not in message:
+            self.original_stderr.write(message)
+            self.original_stderr.flush()
+    
+    def flush(self):
+        self.original_stderr.flush()
+    
+    def isatty(self):
+        return self.original_stderr.isatty()
+    
+    def __getattr__(self, name):
+        return getattr(self.original_stderr, name)
+
+# Apply stderr filter to suppress Docker warnings
+sys.stderr = DockerWarningFilter(sys.stderr)
 logger = logging.getLogger(__name__)
 
 app = typer.Typer(help="IDE Arena")
@@ -874,16 +902,28 @@ def bench(
                             if attempt_success and pass_at_k > 1 and attempt_num < pass_at_k:
                                 print(f"\nEarly exit: Attempt {attempt_num} passed all tests")
                                 try:
-                                    container.stop()
-                                    container.remove()
+                                    # Suppress Docker daemon logging driver warnings
+                                    old_stderr = sys.stderr
+                                    sys.stderr = StringIO()
+                                    try:
+                                        container.stop()
+                                        container.remove()
+                                    finally:
+                                        sys.stderr = old_stderr
                                 except Exception as e:
                                     print(f"Warning: Failed to clean up container: {e}")
                                 break
 
                             if attempt_num < pass_at_k:
                                 try:
-                                    container.stop()
-                                    container.remove()
+                                    # Suppress Docker daemon logging driver warnings
+                                    old_stderr = sys.stderr
+                                    sys.stderr = StringIO()
+                                    try:
+                                        container.stop()
+                                        container.remove()
+                                    finally:
+                                        sys.stderr = old_stderr
                                 except Exception as e:
                                     print(f"Warning: Failed to clean up container after attempt {attempt_num}: {e}")
 
@@ -1012,8 +1052,14 @@ def bench(
                                 status_icon = "pass" if test_status.value == "PASSED" else "fail"
                                 print(f"\t{status_icon} {test_name}: {test_status.value}")
 
-                        container.stop()
-                        container.remove()
+                        # Suppress Docker daemon logging driver warnings
+                        old_stderr = sys.stderr
+                        sys.stderr = StringIO()
+                        try:
+                            container.stop()
+                            container.remove()
+                        finally:
+                            sys.stderr = old_stderr
 
                     except docker.errors.DockerException as e:
                         vprint(verbose, f"Docker error: {e}", "error")
