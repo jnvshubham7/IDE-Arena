@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 import docker
+from docker.types import LogConfig
 import typer
 
 
@@ -456,6 +457,7 @@ def bench(
                             entrypoint=["/bin/sh", "-c"],
                             command=["tail -f /dev/null"],
                             environment=env_vars,
+                            log_config=LogConfig(type="json-file", config={}),
                         )
 
                         try:
@@ -869,6 +871,7 @@ def bench(
                                     entrypoint=["/bin/sh", "-c"],
                                     command=["tail -f /dev/null"],
                                     environment=env_vars,
+                                    log_config=LogConfig(type="json-file", config={}),
                                 )
 
                                 try:
