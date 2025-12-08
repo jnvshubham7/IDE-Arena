@@ -12,6 +12,7 @@ import os
 import re
 import sys
 import traceback
+import warnings
 from datetime import datetime
 from io import StringIO
 from pathlib import Path
@@ -40,7 +41,34 @@ from rich.console import Console
 from rich.syntax import Syntax
 from util import parse_task_description
 
+# Suppress Docker daemon logging driver warnings
 logging.basicConfig(level=logging.WARNING, format="%(message)s")
+logging.getLogger("docker").setLevel(logging.ERROR)
+logging.getLogger("urllib3").setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", message=".*configured logging driver does not support reading.*")
+
+# Redirect stderr to suppress Docker daemon messages
+class DockerWarningFilter:
+    def __init__(self, original_stderr):
+        self.original_stderr = original_stderr
+        self.buffer = ""
+    
+    def write(self, message):
+        if "configured logging driver does not support reading" not in message:
+            self.original_stderr.write(message)
+            self.original_stderr.flush()
+    
+    def flush(self):
+        self.original_stderr.flush()
+    
+    def isatty(self):
+        return self.original_stderr.isatty()
+    
+    def __getattr__(self, name):
+        return getattr(self.original_stderr, name)
+
+# Apply stderr filter to suppress Docker warnings
+sys.stderr = DockerWarningFilter(sys.stderr)
 logger = logging.getLogger(__name__)
 
 app = typer.Typer(help="IDE Arena")
@@ -401,7 +429,25 @@ def bench(
                 )
                 raise typer.Exit(1)
 
-            client = docker.from_env()
+            if not _DOCKER_PY_AVAILABLE:
+                print("[red]Error: Python package 'docker' is not installed in the current environment.[/red]")
+                print("Install it with: `pip install docker` or `pip install -r requirements.txt`")
+                raise typer.Exit(1)
+
+            try:
+                client = docker.from_env()
+            except Exception as e:
+                # Provide a clearer, actionable error message when Docker is unreachable
+                print("[red]Error: Unable to connect to the Docker daemon.[/red]")
+                print(f"[red]Reason:[/red] {str(e)}")
+                print("[yellow]Suggested steps:[/yellow]")
+                print("  1. Ensure Docker Desktop is running (look for the whale icon).")
+                print("  2. Restart Docker Desktop or run as administrator: `Restart Docker`.")
+                print("  3. Run `docker version` and `docker info` to inspect server status.")
+                print("  4. On Windows, check the service: `sc query com.docker.service` and restart if needed.")
+                print("  5. If using WSL2, ensure WSL is working and Docker is configured for WSL2 integration.")
+                print("If the problem persists, check Docker Desktop logs and try reinstalling/updating Docker.")
+                raise typer.Exit(1)
 
             task_ids = (
                 [d.name for d in task_dir.iterdir() if d.is_dir()]
@@ -583,66 +629,77 @@ def bench(
                             print(f"CONTAINER: Git status check failed: {git_status_check.get('error', 'Unknown error')}")
 
                         print("CONTAINER: Creating .gitignore...")
-                        # Use printf with escaped newlines to avoid heredoc issues with docker exec
-                        # The repr() call in docker_utils.py breaks heredoc syntax
-                        gitignore_lines = [
-                            "node_modules/",
-                            "venv/",
-                            "env/",
-                            ".env",
-                            "__pycache__/",
-                            "*.pyc",
-                            "*.pyo",
-                            ".pytest_cache/",
-                            "",
-                            "build/",
-                            "dist/",
-                            "*.egg-info/",
-                            "target/",
-                            "",
-                            "*.log",
-                            "*.tmp",
-                            ".DS_Store",
-                            ".coverage",
-                            ".cache/",
-                            "",
-                            "package-lock.json",
-                            "package.json",
-                            "yarn.lock",
-                            "composer.lock",
-                            "Gemfile.lock",
-                            "Pipfile.lock",
-                            "poetry.lock",
-                            ".package-lock.json",
-                            ".npm/",
-                            ".yarn/",
-                            "",
-                            ".vscode/",
-                            ".idea/",
-                            "*.swp",
-                            "*.swo",
-                            "",
-                            ".DS_Store",
-                            "Thumbs.db",
-                            "",
-                            "*.pid",
-                            "*.seed",
-                            "",
-                            "coverage/",
-                            ".nyc_output/",
-                            ".coverage",
-                            "",
-                            "tmp/",
-                            "temp/",
-                        ]
-                        gitignore_content = "\\n".join(gitignore_lines)
-                        gitignore_result = run_command_in_container(
+                        # Check if .gitignore exists in the container and preserve it
+                        gitignore_check = run_command_in_container(
                             container=container,
-                            command=["sh", "-c", f"cd /app && printf '%b' '{gitignore_content}' > .gitignore"],
+                            command=["test", "-f", "/app/.gitignore"],
                             stream=False,
                         )
-                        if gitignore_result.get("exit_code") != 0:
-                            print(f"CONTAINER: Failed to create .gitignore: {gitignore_result.get('error', 'Unknown error')}")
+                        
+                        if gitignore_check.get("exit_code") != 0:
+                            # No existing .gitignore, create a default one
+                            # Use printf with escaped newlines to avoid heredoc issues with docker exec
+                            # The repr() call in docker_utils.py breaks heredoc syntax
+                            gitignore_lines = [
+                                "node_modules/",
+                                "venv/",
+                                "env/",
+                                ".env",
+                                "__pycache__/",
+                                "*.pyc",
+                                "*.pyo",
+                                ".pytest_cache/",
+                                "",
+                                "build/",
+                                "dist/",
+                                "*.egg-info/",
+                                "target/",
+                                "",
+                                "*.log",
+                                "*.tmp",
+                                ".DS_Store",
+                                ".coverage",
+                                ".cache/",
+                                "",
+                                "package-lock.json",
+                                "package.json",
+                                "yarn.lock",
+                                "composer.lock",
+                                "Gemfile.lock",
+                                "Pipfile.lock",
+                                "poetry.lock",
+                                ".package-lock.json",
+                                ".npm/",
+                                ".yarn/",
+                                "",
+                                ".vscode/",
+                                ".idea/",
+                                "*.swp",
+                                "*.swo",
+                                "",
+                                ".DS_Store",
+                                "Thumbs.db",
+                                "",
+                                "*.pid",
+                                "*.seed",
+                                "",
+                                "coverage/",
+                                ".nyc_output/",
+                                ".coverage",
+                                "",
+                                "tmp/",
+                                "temp/",
+                            ]
+                            gitignore_content = "\\n".join(gitignore_lines)
+                            gitignore_result = run_command_in_container(
+                                container=container,
+                                command=["sh", "-c", f"cd /app && printf '%b' '{gitignore_content}' > .gitignore"],
+                                stream=False,
+                            )
+                            if gitignore_result.get("exit_code") != 0:
+                                print(f"CONTAINER: Failed to create .gitignore: {gitignore_result.get('error', 'Unknown error')}")
+                        else:
+                            print("CONTAINER: Using existing .gitignore from dataset")
 
                         print("CONTAINER: Checking available files...")
                         ls_result = run_command_in_container(
@@ -654,6 +711,16 @@ def bench(
                             print(f"CONTAINER: Files in /app: {ls_result.get('output', '').strip()}")
 
                         print("CONTAINER: Adding source files to git (respecting .gitignore)...")
+
+                        # First, remove any files from the index that should be ignored
+                        # Use git rm --cached with the files we want to exclude
+                        git_clean_index = run_command_in_container(
+                            container=container,
+                            command=["git", "-C", "/app", "rm", "-r", "--cached", "-f", "."],
+                            stream=False,
+                        )
+                        if git_clean_index.get("exit_code") == 0:
+                            print("CONTAINER: Cleared git index")
 
                         git_reset_result = run_command_in_container(
                             container=container,
@@ -850,16 +917,28 @@ def bench(
                             if attempt_success and pass_at_k > 1 and attempt_num < pass_at_k:
                                 print(f"\nEarly exit: Attempt {attempt_num} passed all tests")
                                 try:
-                                    container.stop()
-                                    container.remove()
+                                    # Suppress Docker daemon logging driver warnings
+                                    old_stderr = sys.stderr
+                                    sys.stderr = StringIO()
+                                    try:
+                                        container.stop()
+                                        container.remove()
+                                    finally:
+                                        sys.stderr = old_stderr
                                 except Exception as e:
                                     print(f"Warning: Failed to clean up container: {e}")
                                 break
 
                             if attempt_num < pass_at_k:
                                 try:
-                                    container.stop()
-                                    container.remove()
+                                    # Suppress Docker daemon logging driver warnings
+                                    old_stderr = sys.stderr
+                                    sys.stderr = StringIO()
+                                    try:
+                                        container.stop()
+                                        container.remove()
+                                    finally:
+                                        sys.stderr = old_stderr
                                 except Exception as e:
                                     print(f"Warning: Failed to clean up container after attempt {attempt_num}: {e}")
 
@@ -989,8 +1068,14 @@ def bench(
                                 status_icon = "pass" if test_status.value == "PASSED" else "fail"
                                 print(f"\t{status_icon} {test_name}: {test_status.value}")
 
-                        container.stop()
-                        container.remove()
+                        # Suppress Docker daemon logging driver warnings
+                        old_stderr = sys.stderr
+                        sys.stderr = StringIO()
+                        try:
+                            container.stop()
+                            container.remove()
+                        finally:
+                            sys.stderr = old_stderr
 
                     except docker.errors.DockerException as e:
                         vprint(verbose, f"Docker error: {e}", "error")
